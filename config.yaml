@@ -1,0 +1,41 @@
+# Address-poisoning forensic pipeline configuration.
+chain:
+  name: ethereum
+  chain_id: 1
+
+tokens:            # both are treated as 1 token = 1 USD
+  USDT: {address: "0xdac17f958d2ee523a2206206994597c13d831ec7", decimals: 6}
+  USDC: {address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", decimals: 6}
+
+window:            # UTC, 30 days. Change to the period you want to study.
+  start: "2026-10-01T00:00:00Z"
+  end:   "2026-10-31T00:00:00Z"
+
+collect:
+  chunk_blocks: 10      # blocks per eth_getLogs call; halves automatically on provider errors
+  workers: 4             # parallel chunk downloads
+  max_rps: 7             # stay below your Chainstack plan's rate limit
+  keep_raw: true         # keep gzipped raw logs (several GB for 30 days); hashes are stored either way
+
+detection:
+  low_value_usd: 1.0         # a transfer below this is "low-value" (zero-value or dust)
+  min_payment_usd: 1.0       # a transfer at or above this is a genuine payment
+  lookback_blocks: 50400     # 7 days: how far back the mimicked payment may be
+  min_prefix: 3              # hex chars after 0x that must match
+  min_suffix: 4              # trailing hex chars that must match
+  payoff_min_usd: 100.0      # victim -> lookalike transfer counted as a loss incident
+  payoff_horizon_blocks: 216000   # 30 days
+
+model:
+  test_fraction: 0.30        # last 30 % of the window (by block) is the test set
+  valid_fraction: 0.15       # last 15 % of the training period: early stopping + calibration
+  max_train_rows: 3000000
+  shap_sample: 5000
+  seed: 42
+
+attribution:
+  max_tx_enrich: 60000      # cap on eth_getTransactionByHash calls
+  shared_contracts: []       # public batch-send contracts that must not link campaigns
+
+paths:
+  data_dir: data
