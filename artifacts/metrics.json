@@ -1,0 +1,58 @@
+{
+ "baseline: zero-value rule": {
+  "precision": 0.9355418563524925,
+  "recall": 0.6732332158185946,
+  "f1": 0.7830029982191387,
+  "pr_auc": 0.816611175597972,
+  "roc_auc": 0.8056739792297057,
+  "threshold": 0.5
+ },
+ "logistic regression (behavioural+context)": {
+  "precision": 0.9071010489894167,
+  "recall": 0.9928448549907648,
+  "f1": 0.948038159990962,
+  "pr_auc": 0.9415137275001408,
+  "roc_auc": 0.9562140180314039,
+  "threshold": 0.4836020370567734
+ },
+ "LightGBM (behavioural)": {
+  "precision": 0.9122326120138541,
+  "recall": 0.9829273129261783,
+  "f1": 0.9462614086447391,
+  "pr_auc": 0.9804862720784557,
+  "roc_auc": 0.97948321367105,
+  "threshold": 0.379716952134283
+ },
+ "LightGBM (behavioural+context)": {
+  "precision": 0.9488095675902294,
+  "recall": 0.9889371236521496,
+  "f1": 0.9684578576828589,
+  "pr_auc": 0.9940738762545093,
+  "roc_auc": 0.9933359898878952,
+  "threshold": 0.4014008288460019
+ },
+ "LightGBM (all (incl. similarity))": {
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0,
+  "pr_auc": 1.0,
+  "roc_auc": 1.0,
+  "threshold": 0.5971640008462084
+ },
+ "_outcome_validation": {
+  "n_confirmed_test": 4,
+  "recall_on_confirmed": 1.0
+ },
+ "_rule_missed_candidates": {
+  "n": 104397
+ },
+ "_dataset": {
+  "n_train": 3000000,
+  "n_valid": 1198045,
+  "n_test": 3423203,
+  "pos_rate_train": 0.5761223333333333,
+  "pos_rate_test": 0.5715798916979216,
+  "brier_raw": 0.026756695129128392,
+  "brier_calibrated": 0.026061728293051593
+ }
+}

@@ -1,0 +1,1 @@
+max_actor_payments=20; excluded addresses=4; excluded transfers=4837
