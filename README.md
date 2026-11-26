@@ -78,6 +78,7 @@ python -m poisonforensics --config config.synth.yaml synth   # then build, train
 
 - Counterfeit-token poisoning (fake "USDT" contracts) is out of scope: only transfers
   emitted by the genuine token contracts are collected.
-- Address aggregates use the whole window; this suits after-the-fact analysis. A real-time
-  detector must compute them causally.
+- Address aggregates are past-only by default (`causal_features: true`): each transfer sees
+  only earlier activity of its actor and target. Set `causal_features: false` in
+  `config.yaml` to reproduce the whole-window variant (Table 3, last column).
 - Addresses are pseudonymous public data. The pipeline does not link them to people.

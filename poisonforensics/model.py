@@ -82,9 +82,9 @@ def run(cfg: Config) -> None:
     feats = FEATURE_SETS[PRIMARY]
     lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=500, class_weight="balanced"))
     lr_train = train.sample(min(len(train), 500_000), random_state=m["seed"])
-    lr.fit(lr_train[feats].astype(float), lr_train["label"].values)
-    thr = best_f1_threshold(yv, lr.predict_proba(valid[feats].astype(float))[:, 1])
-    s = lr.predict_proba(test[feats].astype(float))[:, 1]
+    lr.fit(lr_train[feats].astype(float).fillna(-1), lr_train["label"].values)
+    thr = best_f1_threshold(yv, lr.predict_proba(valid[feats].astype(float).fillna(-1))[:, 1])
+    s = lr.predict_proba(test[feats].astype(float).fillna(-1))[:, 1]
     results[f"logistic regression ({PRIMARY})"] = metrics(yte, s, thr)
     curves["Logistic regression"] = precision_recall_curve(yte, s)
 
@@ -160,7 +160,7 @@ def run(cfg: Config) -> None:
         "mean_abs_shap", ascending=False)
     imp.to_csv(out / "shap_importance.csv", index=False)
     shap.summary_plot(sv_, sample[feats], show=False, max_display=12, plot_size=(4.8, 3.6))
-    plt.tight_layout(); plt.savefig(out / "fig_shap_summary.png", dpi=300); plt.close()
+    plt.tight_layout(); plt.savefig(out / "fig_shap_summary.png", dpi=300, bbox_inches="tight"); plt.close()
 
     for k, v in results.items():
         if not k.startswith("_"):

@@ -49,6 +49,12 @@ def run(cfg: Config, reuse: bool = False) -> None:
     else:
         _heavy_stages(con, glob, low, minpay, W, S)
 
+    causal = bool(d.get("causal_features", True))
+    have = {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+    if causal and "causal" not in have:
+        _causal_stage(con, low, minpay)
+    print(f"Address features: {'past-only (causal)' if causal else 'whole window'}")
+
     # An address with many payment-sized transfers of its own is an established address
     # (exchange, bot, vanity-address sibling), not a single-purpose lookalike: drop it as actor.
     con.execute("""
@@ -78,7 +84,7 @@ def run(cfg: Config, reuse: bool = False) -> None:
           AND n.block_number - l.block_number <= {int(d['payoff_horizon_blocks'])}
         GROUP BY l.uid
     """)
-    _export(con, cfg, P, K, ex)
+    _export(con, cfg, P, K, ex, causal)
 
 
 def _heavy_stages(con, glob, low, minpay, W, S) -> None:
@@ -161,9 +167,90 @@ def _heavy_stages(con, glob, low, minpay, W, S) -> None:
 
 
 
-def _export(con, cfg: Config, P: int, K: int, ex) -> None:
+def _causal_stage(con, low: float, minpay: float) -> None:
+    """Address features from activity strictly before each transfer (no look-ahead).
+
+    Every transfer gives one edge per side. For each address the edges are ordered by uid
+    (block, log index) and summed over all earlier edges only, so the features of a transfer
+    use nothing that happened at or after it.
+    """
+    print("Computing past-only address features (this is the longest step) ...")
+    con.execute("""
+        CREATE OR REPLACE TABLE focus AS
+        SELECT actor AS addr FROM low UNION SELECT target FROM low
+    """)
+    con.execute("""
+        CREATE OR REPLACE TABLE edges AS
+        SELECT e.* FROM (
+            SELECT from_addr AS addr, to_addr AS cp, uid, block_number AS b, value_usd AS v, TRUE AS is_out
+            FROM transfers
+            UNION ALL
+            SELECT to_addr, from_addr, uid, block_number, value_usd, FALSE FROM transfers) e
+        SEMI JOIN focus f ON f.addr = e.addr
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE edges2 AS
+        SELECT *,
+               uid = min(uid) OVER (PARTITION BY addr, cp) AS first_cp,
+               is_out AND v >= {minpay}
+                 AND uid = min(CASE WHEN is_out AND v >= {minpay} THEN uid END)
+                           OVER (PARTITION BY addr, cp) AS first_payee
+        FROM edges
+    """)
+    con.execute("DROP TABLE edges")
+    con.execute(f"""
+        CREATE OR REPLACE TABLE causal AS
+        SELECT DISTINCT ON (addr, uid) * FROM (
+            SELECT addr, uid,
+                   sum(CAST(is_out AS INTEGER)) OVER w AS n_sent,
+                   sum(CAST(NOT is_out AS INTEGER)) OVER w AS n_recv,
+                   sum(CAST(v < {low} AS INTEGER)) OVER w AS n_low,
+                   sum(CAST(first_cp AS INTEGER)) OVER w AS n_cp,
+                   min(b) OVER w AS first_b,
+                   max(b) OVER w AS last_b,
+                   sum(CASE WHEN is_out THEN v ELSE 0 END) OVER w AS sum_sent,
+                   sum(CASE WHEN NOT is_out THEN v ELSE 0 END) OVER w AS sum_recv,
+                   sum(CAST(is_out AND v >= {minpay} AS INTEGER)) OVER w AS n_normal_out,
+                   sum(CAST(first_payee AS INTEGER)) OVER w AS n_recipients
+            FROM edges2
+            WINDOW w AS (PARTITION BY addr ORDER BY uid
+                         RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        ) c
+        SEMI JOIN low l ON l.uid = c.uid
+    """)
+    con.execute("DROP TABLE edges2")
+
+
+def _export(con, cfg: Config, P: int, K: int, ex, causal: bool = True) -> None:
     data_dir = cfg.data_dir
     out = (data_dir / "dataset.parquet").as_posix()
+    if causal:   # sums over an empty past are NULL: no earlier activity
+        addr_feats = """
+               coalesce(a.n_sent, 0) AS actor_n_sent, coalesce(a.n_recv, 0) AS actor_n_recv,
+               a.n_low / nullif(a.n_sent + a.n_recv, 0) AS actor_frac_low,
+               coalesce(a.n_cp, 0) AS actor_n_cp,
+               a.last_b - a.first_b AS actor_lifetime_blocks,
+               l.block_number - a.first_b AS actor_age_blocks,
+               log10(coalesce(a.sum_sent, 0) + 1) AS actor_log_sum_sent,
+               log10(coalesce(a.sum_recv, 0) + 1) AS actor_log_sum_recv,
+               coalesce(g.n_normal_out, 0) AS target_n_normal_out,
+               coalesce(g.n_recipients, 0) AS target_n_recipients,
+               log10(coalesce(g.sum_sent, 0) + 1) AS target_log_sum_out,"""
+        addr_join = """
+        LEFT JOIN causal a ON a.addr = l.actor AND a.uid = l.uid
+        LEFT JOIN causal g ON g.addr = l.target AND g.uid = l.uid"""
+    else:
+        addr_feats = """
+               a.n_sent AS actor_n_sent, a.n_recv AS actor_n_recv,
+               a.n_low / (a.n_sent + a.n_recv) AS actor_frac_low, a.n_cp AS actor_n_cp,
+               a.last_block - a.first_block AS actor_lifetime_blocks,
+               l.block_number - a.first_block AS actor_age_blocks,
+               log10(a.sum_sent + 1) AS actor_log_sum_sent, log10(a.sum_recv + 1) AS actor_log_sum_recv,
+               g.n_normal_out AS target_n_normal_out, g.n_recipients AS target_n_recipients,
+               log10(g.sum_sent + 1) AS target_log_sum_out,"""
+        addr_join = """
+        JOIN addragg a ON a.addr = l.actor
+        JOIN addragg g ON g.addr = l.target"""
     con.execute(f"""
         COPY (
         SELECT l.uid, l.block_number, l.ts, l.tx_hash, l.log_index, l.token,
@@ -177,13 +264,7 @@ def _export(con, cfg: Config, P: int, K: int, ex) -> None:
                CAST(l.token = 'USDT' AS INTEGER) AS token_is_usdt,
                t.n AS tx_n_transfers, t.n_low / t.n AS tx_frac_low,
                t.n_to AS tx_n_distinct_to, t.n_from AS tx_n_distinct_from,
-               a.n_sent AS actor_n_sent, a.n_recv AS actor_n_recv,
-               a.n_low / (a.n_sent + a.n_recv) AS actor_frac_low, a.n_cp AS actor_n_cp,
-               a.last_block - a.first_block AS actor_lifetime_blocks,
-               l.block_number - a.first_block AS actor_age_blocks,
-               log10(a.sum_sent + 1) AS actor_log_sum_sent, log10(a.sum_recv + 1) AS actor_log_sum_recv,
-               g.n_normal_out AS target_n_normal_out, g.n_recipients AS target_n_recipients,
-               log10(g.sum_sent + 1) AS target_log_sum_out,
+               {addr_feats}
                -- context
                coalesce(o.blocks_since_out, -1) AS target_blocks_since_out,
                log10(coalesce(o.last_out, 0) + 1) AS target_log_last_out,
@@ -191,9 +272,7 @@ def _export(con, cfg: Config, P: int, K: int, ex) -> None:
                coalesce(b.prefix_len, 0) AS sim_prefix_len, coalesce(b.suffix_len, 0) AS sim_suffix_len,
                coalesce(b.delay_blocks, -1) AS sim_delay_blocks
         FROM low l
-        JOIN txagg t ON t.tx_hash = l.tx_hash
-        JOIN addragg a ON a.addr = l.actor
-        JOIN addragg g ON g.addr = l.target
+        JOIN txagg t ON t.tx_hash = l.tx_hash{addr_join}
         LEFT JOIN best_f b ON b.uid = l.uid
         LEFT JOIN lastout o ON o.uid = l.uid
         LEFT JOIN payoff p ON p.uid = l.uid
